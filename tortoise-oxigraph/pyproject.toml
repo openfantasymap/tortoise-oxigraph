@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tortoise-oxigraph"
+version = "0.1.0"
+description = "A Tortoise ORM backend backed by pyoxigraph (RDF / SPARQL)"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+dependencies = [
+    "tortoise-orm>=1.1.5",
+    "pyoxigraph>=0.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
