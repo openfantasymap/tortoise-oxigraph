@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from contextvars import ContextVar
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from typing import Any
@@ -26,6 +28,10 @@ from tortoise.backends.base.client import (
 from tortoise.exceptions import OperationalError
 
 log = logging.getLogger("tortoise.backends.oxigraph")
+
+
+_WRITE_GRAPH_CTX: ContextVar[str | None] = ContextVar("oxigraph_write_graph", default=None)
+_READ_GRAPHS_CTX: ContextVar[tuple[str, ...] | None] = ContextVar("oxigraph_read_graphs", default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +227,9 @@ class OxigraphClient(BaseDBAsyncClient):
     def __init__(self, store_path: str = ":memory:", **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.store_path = store_path
+        self.initialization_mode = str(kwargs.get("initialization_mode", "none")).lower()
+        self.required_ontology_iris = tuple(kwargs.get("required_ontology_iris", ()) or ())
+        self.ontology_graph = kwargs.get("ontology_graph")
         self._connection: _OxigraphConnectionWrapper | None = None
         self._lock = asyncio.Lock()
 
@@ -235,8 +244,41 @@ class OxigraphClient(BaseDBAsyncClient):
         else:
             store = ox.Store(path=self.store_path)
         self._connection = _OxigraphConnectionWrapper(store, loop)
+        await self.run_in_executor(self._apply_initialization_mode)
         await self._post_connect()
         log.debug("Opened oxigraph store: %s", self.store_path)
+
+    def _apply_initialization_mode(self) -> None:
+        if self.initialization_mode not in {"none", "enforce", "bootstrap"}:
+            raise OperationalError(
+                f"Invalid initialization_mode={self.initialization_mode!r}; "
+                "expected one of: none, enforce, bootstrap"
+            )
+        if self.initialization_mode == "none" or not self.required_ontology_iris:
+            return
+
+        graph_term = ox.NamedNode(self.ontology_graph) if self.ontology_graph else ox.DefaultGraph()
+
+        if self.initialization_mode == "bootstrap":
+            rdf_type = ox.NamedNode("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
+            owl_ontology = ox.NamedNode("http://www.w3.org/2002/07/owl#Ontology")
+            for ontology_iri in self.required_ontology_iris:
+                self.store.add(
+                    ox.Quad(ox.NamedNode(ontology_iri), rdf_type, owl_ontology, graph_term)
+                )
+
+        missing: list[str] = []
+        for ontology_iri in self.required_ontology_iris:
+            has_ontology = any(
+                self.store.quads_for_pattern(ox.NamedNode(ontology_iri), None, None, graph_term)
+            )
+            if not has_ontology:
+                missing.append(ontology_iri)
+
+        if missing:
+            raise OperationalError(
+                "Missing required ontologies during initialization: " + ", ".join(missing)
+            )
 
     async def close(self) -> None:
         if self._connection is not None:
@@ -286,6 +328,49 @@ class OxigraphClient(BaseDBAsyncClient):
         """Run a synchronous callable in the thread-pool executor."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+
+    @asynccontextmanager
+    async def graph_scope(
+        self,
+        *,
+        write_graph: str | None = None,
+        read_graphs: Sequence[str] | None = None,
+    ):
+        """Temporarily force write/read graph routing for operations in this context."""
+        write_token = _WRITE_GRAPH_CTX.set(write_graph)
+        read_token = _READ_GRAPHS_CTX.set(tuple(read_graphs) if read_graphs else None)
+        try:
+            yield self
+        finally:
+            _WRITE_GRAPH_CTX.reset(write_token)
+            _READ_GRAPHS_CTX.reset(read_token)
+
+    def current_write_graph(self) -> ox.DefaultGraph | ox.NamedNode:
+        graph_iri = _WRITE_GRAPH_CTX.get()
+        return ox.NamedNode(graph_iri) if graph_iri else ox.DefaultGraph()
+
+    def apply_read_graphs(self, sparql: str) -> str:
+        read_graphs = _READ_GRAPHS_CTX.get()
+        if not read_graphs:
+            return sparql
+
+        graph_values = " ".join(f"<{g}>" for g in read_graphs)
+        m = re.search(r"WHERE\s*\{\n(?P<body>[\s\S]*?)\n\}(?P<tail>[\s\S]*)$", sparql)
+        if not m:
+            return sparql
+
+        body = m.group("body")
+        tail = m.group("tail")
+        return (
+            sparql[: m.start()]
+            + "WHERE {\n"
+            + f"  VALUES ?__graph {{ {graph_values} }}\n"
+            + "  GRAPH ?__graph {\n"
+            + "\n".join(f"    {line}" for line in body.splitlines())
+            + "\n  }\n"
+            + "}"
+            + tail
+        )
 
     # ---- SQL pass-through (execute_query receives pre-built SQL) ----------
     # The executor overrides the high-level methods so these are only called
@@ -398,7 +483,8 @@ class OxigraphClient(BaseDBAsyncClient):
                 row_dict[pk_col] = pk_val
 
             subj = model_instance_iri(app, model_name, pk_val)
-            quads = [ox.Quad(subj, _RDF_TYPE, type_iri, ox.DefaultGraph())]
+            graph = self.current_write_graph()
+            quads = [ox.Quad(subj, _RDF_TYPE, type_iri, graph)]
             for col, val in row_dict.items():
                 if val is None:
                     continue
@@ -407,7 +493,7 @@ class OxigraphClient(BaseDBAsyncClient):
                 except Exception:
                     term = ox.Literal(str(val))
                 pred = field_predicate_iri(app, model_name, col)
-                quads.append(ox.Quad(subj, pred, term, ox.DefaultGraph()))
+                quads.append(ox.Quad(subj, pred, term, graph))
             self.store.extend(quads)
 
         await self.run_in_executor(lambda: [_insert_row(r) for r in rows])

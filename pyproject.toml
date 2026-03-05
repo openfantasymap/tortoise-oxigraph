@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tortoise-oxigraph"
+version = "0.1.0"
+description = "A Tortoise ORM backend backed by pyoxigraph (RDF / SPARQL)"
+readme = "tortoise-oxigraph/README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+dependencies = [
+    "tortoise-orm>=1.1.5",
+    "pyoxigraph>=0.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.setuptools]
+package-dir = {"" = "tortoise-oxigraph"}
+
+[tool.setuptools.packages.find]
+where = ["tortoise-oxigraph"]
+include = ["tortoise_oxigraph*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
