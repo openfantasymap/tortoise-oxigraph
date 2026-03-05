@@ -150,7 +150,7 @@ class OxigraphExecutor(BaseExecutor):
         subj = self._subject_iri(pk_val)
 
         quads: list[ox.Quad] = [
-            ox.Quad(subj, _RDF_TYPE, self._type_iri(), ox.DefaultGraph()),
+            ox.Quad(subj, _RDF_TYPE, self._type_iri(), self.db.current_write_graph()),
         ]
 
         for field_name, col in self._db_columns():
@@ -172,7 +172,7 @@ class OxigraphExecutor(BaseExecutor):
             except Exception:
                 term = ox.Literal(str(db_val))
 
-            quads.append(ox.Quad(subj, self._field_pred(col), term, ox.DefaultGraph()))
+            quads.append(ox.Quad(subj, self._field_pred(col), term, self.db.current_write_graph()))
 
         await self.db.run_in_executor(self._store.extend, quads)
         await self._process_insert_result(instance, pk_val)
@@ -204,6 +204,7 @@ class OxigraphExecutor(BaseExecutor):
             raise OperationalError("Cannot update a record without a primary key")
 
         subj = self._subject_iri(pk_val)
+        graph = self.db.current_write_graph()
 
         # Determine which fields to update
         if update_fields is not None:
@@ -226,7 +227,7 @@ class OxigraphExecutor(BaseExecutor):
             value = getattr(instance, field_name, None)
 
             # Remove existing triple for this field
-            to_remove = list(self._store.quads_for_pattern(subj, pred, None, None))
+            to_remove = list(self._store.quads_for_pattern(subj, pred, None, graph))
             for quad in to_remove:
                 self._store.remove(quad)
 
@@ -241,7 +242,7 @@ class OxigraphExecutor(BaseExecutor):
                         term = python_to_term(db_val)
                     except Exception:
                         term = ox.Literal(str(db_val))
-                    self._store.add(ox.Quad(subj, pred, term, ox.DefaultGraph()))
+                    self._store.add(ox.Quad(subj, pred, term, graph))
 
         return 1
 
@@ -257,7 +258,7 @@ class OxigraphExecutor(BaseExecutor):
             return 0
 
         subj = self._subject_iri(pk_val)
-        to_remove = list(self._store.quads_for_pattern(subj, None, None, None))
+        to_remove = list(self._store.quads_for_pattern(subj, None, None, self.db.current_write_graph()))
         for quad in to_remove:
             self._store.remove(quad)
         return len(to_remove)
@@ -286,6 +287,7 @@ class OxigraphExecutor(BaseExecutor):
             parsed,
             {parsed.table: self._meta()},
         )
+        sparql = self.db.apply_read_graphs(sparql)
         log.debug("SPARQL SELECT:\n%s", sparql)
 
         if parsed.is_count:

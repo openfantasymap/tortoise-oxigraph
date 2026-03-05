@@ -53,6 +53,34 @@ async def main():
     await Tortoise.close_connections()
 ```
 
+
+## Ontology initialization and named-graph routing
+
+The backend now supports optional ontology enforcement and graph-scoped execution:
+
+- `initialization_mode="none" | "enforce" | "bootstrap"`
+- `required_ontology_iris=["urn:ontology:core", ...]`
+- `ontology_graph="urn:graph:ontology"` (optional, defaults to the default graph)
+
+`bootstrap` writes minimal `owl:Ontology` declarations for required ontologies at connection time, then validates them.
+`enforce` only validates that those ontology IRIs already exist in the store.
+
+You can also route operations to named graphs and merge read graphs dynamically:
+
+```python
+from tortoise.connection import connections
+
+conn = connections.get("default")
+
+# write + read graph scoping
+async with conn.graph_scope(write_graph="urn:graph:g1", read_graphs=["urn:graph:g1"]):
+    await Tournament.create(name="Scoped")
+
+# dynamic merge (server-side query union across named graphs)
+async with conn.graph_scope(read_graphs=["urn:graph:g1", "urn:graph:g2"]):
+    results = await Tournament.all()
+```
+
 ## URL format
 
 | URL | Store type |
