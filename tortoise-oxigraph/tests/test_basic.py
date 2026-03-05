@@ -16,6 +16,9 @@ Tests cover:
 
 from __future__ import annotations
 
+import os
+import tempfile
+
 import pyoxigraph as ox
 import pytest
 from tortoise import Tortoise, fields
@@ -209,6 +212,29 @@ async def test_graph_scoped_reads_and_writes():
     async with conn.graph_scope(read_graphs=["urn:graph:g1", "urn:graph:g2"]):
         merged = await Tournament.all().order_by("name")
         assert [t.name for t in merged] == ["Graph One", "Graph Two"]
+
+
+@pytest.mark.asyncio
+async def test_import_rdf_file_turtle():
+    conn = connections.get("default")
+
+    with tempfile.NamedTemporaryFile("w", suffix=".ttl", delete=False) as f:
+        f.write(
+            """
+<http://example.org/tournament/imported-1> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <tortoise://models/Tournament> .
+<http://example.org/tournament/imported-1> <tortoise://models/Tournament#id> 101 .
+<http://example.org/tournament/imported-1> <tortoise://models/Tournament#name> "Imported Open" .
+"""
+        )
+        ttl_path = f.name
+
+    try:
+        await conn.import_rdf_file(ttl_path)
+        rows = await Tournament.filter(name="Imported Open")
+        assert len(rows) == 1
+        assert rows[0].id == 101
+    finally:
+        os.unlink(ttl_path)
 
 
 @pytest.mark.asyncio

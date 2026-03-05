@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from contextvars import ContextVar
 from collections.abc import Sequence
@@ -230,6 +231,9 @@ class OxigraphClient(BaseDBAsyncClient):
         self.initialization_mode = str(kwargs.get("initialization_mode", "none")).lower()
         self.required_ontology_iris = tuple(kwargs.get("required_ontology_iris", ()) or ())
         self.ontology_graph = kwargs.get("ontology_graph")
+        self.import_files = tuple(kwargs.get("import_files", ()) or ())
+        self.import_graph = kwargs.get("import_graph")
+        self.import_lenient = bool(kwargs.get("import_lenient", False))
         self._connection: _OxigraphConnectionWrapper | None = None
         self._lock = asyncio.Lock()
 
@@ -245,6 +249,7 @@ class OxigraphClient(BaseDBAsyncClient):
             store = ox.Store(path=self.store_path)
         self._connection = _OxigraphConnectionWrapper(store, loop)
         await self.run_in_executor(self._apply_initialization_mode)
+        await self.run_in_executor(self._apply_initial_imports)
         await self._post_connect()
         log.debug("Opened oxigraph store: %s", self.store_path)
 
@@ -278,6 +283,103 @@ class OxigraphClient(BaseDBAsyncClient):
         if missing:
             raise OperationalError(
                 "Missing required ontologies during initialization: " + ", ".join(missing)
+            )
+
+
+    def _apply_initial_imports(self) -> None:
+        if not self.import_files:
+            return
+        for file_path in self.import_files:
+            self._load_rdf_path(
+                file_path,
+                graph=self.import_graph,
+                rdf_format=None,
+                lenient=self.import_lenient,
+                bulk=True,
+            )
+
+    @staticmethod
+    def _rdf_format_from_path(file_path: str) -> ox.RdfFormat | None:
+        suffix = os.path.splitext(file_path)[1].lower()
+        mapping = {
+            ".ttl": ox.RdfFormat.TURTLE,
+            ".n3": ox.RdfFormat.N3,
+            ".nt": ox.RdfFormat.N_TRIPLES,
+            ".nq": ox.RdfFormat.N_QUADS,
+            ".rdf": ox.RdfFormat.RDF_XML,
+            ".xml": ox.RdfFormat.RDF_XML,
+            ".trig": ox.RdfFormat.TRIG,
+            ".jsonld": ox.RdfFormat.JSON_LD,
+            ".json": ox.RdfFormat.JSON_LD,
+        }
+        return mapping.get(suffix)
+
+    @staticmethod
+    def _coerce_rdf_format(rdf_format: str | ox.RdfFormat | None) -> ox.RdfFormat | None:
+        if rdf_format is None or isinstance(rdf_format, ox.RdfFormat):
+            return rdf_format
+        key = rdf_format.strip().upper().replace("-", "_").replace(" ", "_")
+        aliases = {"TTL": "TURTLE", "XML": "RDF_XML", "NTRIPLES": "N_TRIPLES", "NQUADS": "N_QUADS"}
+        key = aliases.get(key, key)
+        try:
+            return getattr(ox.RdfFormat, key)
+        except AttributeError as exc:
+            raise OperationalError(f"Unsupported RDF format: {rdf_format}") from exc
+
+    def _load_rdf_path(
+        self,
+        file_path: str,
+        *,
+        graph: str | None = None,
+        rdf_format: str | ox.RdfFormat | None = None,
+        lenient: bool = False,
+        bulk: bool = False,
+    ) -> None:
+        if not os.path.exists(file_path):
+            raise OperationalError(f"RDF import file does not exist: {file_path}")
+
+        fmt = self._coerce_rdf_format(rdf_format) or self._rdf_format_from_path(file_path)
+        to_graph = ox.NamedNode(graph) if graph else self.current_write_graph()
+        loader = self.store.bulk_load if bulk else self.store.load
+        loader(path=file_path, format=fmt, to_graph=to_graph, lenient=lenient)
+
+    async def import_rdf_file(
+        self,
+        file_path: str,
+        *,
+        graph: str | None = None,
+        rdf_format: str | ox.RdfFormat | None = None,
+        lenient: bool = False,
+        bulk: bool = True,
+    ) -> None:
+        """Import RDF content from a local file into the store (default: bulk loader)."""
+        await self.ensure_connected()
+        await self.run_in_executor(
+            self._load_rdf_path,
+            file_path,
+            graph=graph,
+            rdf_format=rdf_format,
+            lenient=lenient,
+            bulk=bulk,
+        )
+
+    async def import_rdf_files(
+        self,
+        file_paths: Sequence[str],
+        *,
+        graph: str | None = None,
+        rdf_format: str | ox.RdfFormat | None = None,
+        lenient: bool = False,
+        bulk: bool = True,
+    ) -> None:
+        """Import multiple RDF files so they are queryable with ORM/SPARQL calls."""
+        for file_path in file_paths:
+            await self.import_rdf_file(
+                file_path,
+                graph=graph,
+                rdf_format=rdf_format,
+                lenient=lenient,
+                bulk=bulk,
             )
 
     async def close(self) -> None:

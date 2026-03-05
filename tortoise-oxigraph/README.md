@@ -81,6 +81,23 @@ async with conn.graph_scope(read_graphs=["urn:graph:g1", "urn:graph:g2"]):
     results = await Tournament.all()
 ```
 
+
+You can also import existing RDF files at runtime (TTL/N3/N-Triples/N-Quads/RDF/XML/TriG/JSON-LD):
+
+```python
+from tortoise.connection import connections
+
+conn = connections.get("default")
+await conn.import_rdf_file("./seed/domain.ttl")
+await conn.import_rdf_files(["./seed/a.n3", "./seed/b.ttl"], graph="urn:graph:seed")
+```
+
+To auto-import files at startup, pass connection credentials:
+
+- `import_files=["./seed/domain.ttl", "./seed/rules.n3"]`
+- `import_graph="urn:graph:seed"` (optional)
+- `import_lenient=True` (optional)
+
 ## URL format
 
 | URL | Store type |
