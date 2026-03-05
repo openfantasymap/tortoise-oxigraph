@@ -16,8 +16,13 @@ Tests cover:
 
 from __future__ import annotations
 
+import os
+import tempfile
+
+import pyoxigraph as ox
 import pytest
 from tortoise import Tortoise, fields
+from tortoise.connection import connections
 from tortoise.models import Model
 
 # Ensure the oxigraph backend is registered
@@ -186,3 +191,85 @@ async def test_decimal_field():
 async def test_get_or_none_missing():
     result = await Tournament.get_or_none(id=9999)
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_graph_scoped_reads_and_writes():
+    conn = connections.get("default")
+
+    async with conn.graph_scope(write_graph="urn:graph:g1", read_graphs=["urn:graph:g1"]):
+        await Tournament.create(name="Graph One")
+
+    async with conn.graph_scope(write_graph="urn:graph:g2", read_graphs=["urn:graph:g2"]):
+        await Tournament.create(name="Graph Two")
+
+    assert await Tournament.all().count() == 0
+
+    async with conn.graph_scope(read_graphs=["urn:graph:g1"]):
+        graph_one = await Tournament.all()
+        assert [t.name for t in graph_one] == ["Graph One"]
+
+    async with conn.graph_scope(read_graphs=["urn:graph:g1", "urn:graph:g2"]):
+        merged = await Tournament.all().order_by("name")
+        assert [t.name for t in merged] == ["Graph One", "Graph Two"]
+
+
+@pytest.mark.asyncio
+async def test_import_rdf_file_turtle():
+    conn = connections.get("default")
+
+    with tempfile.NamedTemporaryFile("w", suffix=".ttl", delete=False) as f:
+        f.write(
+            """
+<http://example.org/tournament/imported-1> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <tortoise://models/Tournament> .
+<http://example.org/tournament/imported-1> <tortoise://models/Tournament#id> 101 .
+<http://example.org/tournament/imported-1> <tortoise://models/Tournament#name> "Imported Open" .
+"""
+        )
+        ttl_path = f.name
+
+    try:
+        await conn.import_rdf_file(ttl_path)
+        rows = await Tournament.filter(name="Imported Open")
+        assert len(rows) == 1
+        assert rows[0].id == 101
+    finally:
+        os.unlink(ttl_path)
+
+
+@pytest.mark.asyncio
+async def test_initialization_mode_bootstrap_required_ontologies():
+    await Tortoise.close_connections()
+    await Tortoise.init(
+        config={
+            "connections": {
+                "default": {
+                    "engine": "tortoise_oxigraph",
+                    "credentials": {
+                        "store_path": ":memory:",
+                        "initialization_mode": "bootstrap",
+                        "required_ontology_iris": ["urn:ontology:core"],
+                        "ontology_graph": "urn:graph:ontology",
+                    },
+                }
+            },
+            "apps": {"models": {"models": [__name__], "default_connection": "default"}},
+        }
+    )
+    await Tortoise.generate_schemas()
+
+    conn = connections.get("default")
+    await conn.ensure_connected()
+    check = await conn.run_in_executor(
+        lambda: bool(
+            list(
+                conn.store.quads_for_pattern(
+                    None,
+                    None,
+                    None,
+                    ox.NamedNode("urn:graph:ontology"),
+                )
+            )
+        )
+    )
+    assert check is True

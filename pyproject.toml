@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tortoise-oxigraph"
+version = "0.1.0"
+description = "A Tortoise ORM backend backed by pyoxigraph (RDF / SPARQL)"
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+authors = [
+    { name = "tortoise-oxigraph contributors" },
+]
+keywords = ["tortoise", "orm", "rdf", "sparql", "oxigraph"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "tortoise-orm>=1.1.5",
+    "pyoxigraph>=0.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.setuptools]
+package-dir = {"" = "tortoise-oxigraph"}
+license-files = []
+
+[tool.setuptools.packages.find]
+where = ["tortoise-oxigraph"]
+include = ["tortoise_oxigraph*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
